@@ -131,11 +131,39 @@ export default function App() {
     }
   }, [showDemo]);
 
+  // Fetch loads from backend on mount
+  useEffect(() => {
+    getLoads().then((data) => {
+      if (data && data.length > 0) {
+        const mapped = data.map((l) => ({
+          id: l.id,
+          companyName: l.companyName || 'Shipper',
+          material: l.material,
+          weight: l.weight,
+          origin: l.origin,
+          destination: l.dest || l.destination,
+          targetPrice: l.price ? Number(String(l.price).replace(/[^0-9]/g, '')) : 0,
+          isMine: false
+        }));
+        setLoadsList(prev => {
+          const mine = prev.filter((x) => x.isMine);
+          return [...mine, ...mapped];
+        });
+      }
+    }).catch(() => {});
+  }, []);
+
   // --- ACTIONS ---
   const handlePageChange = (view: View) => { setActiveView(view); window.scrollTo(0,0); setDrawerOpen(false); };
 
-  const handleMobileSubmit = () => {
+  const handleMobileSubmit = async () => {
     if (user.mobile.length !== 10) return;
+    try {
+      const res = await sendOtp(user.mobile);
+      if (res && res.message) alert(res.message);
+    } catch (err) {
+      // Backend down - silent fallback
+    }
     if (user.mobile === '8210160012') {
       setAuthModal({ open: true, step: 'login_pass' });
     } else {
@@ -190,11 +218,25 @@ export default function App() {
     setDriversList([created, ...driversList]); setPlatformStats((prev: any) => ({...prev, trucks: prev.trucks + 1, cities: prev.cities + 2})); setListingTab('my_listings'); setNewTruck({ origin: '', dest: '', capacity: '', charges: '', vehicleNumber: '' }); setBookingStep(1);
   };
 
-  const handlePostLoad = (e: React.FormEvent) => {
+  const handlePostLoad = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newLoad.origin) return;
     const loadPayload = { id: `LOD-${Date.now()}`, companyName: user.businessName || `${user.firstName}'s Enterprise`, phone: user.mobile, dp: user.dp, material: newLoad.material, weight: newLoad.weight, origin: newLoad.origin, destination: newLoad.destination, targetPrice: Number(newLoad.targetPrice), status: 'Booked', isMine: true };
-    setLoadsList([loadPayload, ...loadsList]); setPlatformStats((prev: any) => ({...prev, parcels: prev.parcels + 1, cities: prev.cities + 2})); setListingTab('my_listings'); setNewLoad({ material: '', weight: '', origin: '', destination: '', targetPrice: '' }); setBookingStep(1);
+    setLoadsList([loadPayload, ...loadsList]);
+    setPlatformStats((prev: any) => ({...prev, parcels: prev.parcels + 1, cities: prev.cities + 2}));
+    setListingTab('my_listings');
+    setNewLoad({ material: '', weight: '', origin: '', destination: '', targetPrice: '' });
+    setBookingStep(1);
+    // Sync to backend (non-blocking)
+    try {
+      await createLoad({
+        origin: newLoad.origin,
+        dest: newLoad.destination,
+        material: newLoad.material,
+        weight: newLoad.weight,
+        price: `₹${newLoad.targetPrice}`,
+      });
+    } catch (err) {}
   };
 
   const handlePostBus = (e: React.FormEvent) => {

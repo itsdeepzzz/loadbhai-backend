@@ -1,5 +1,16 @@
 const express = require('express');
 const cors = require('cors');
+const mongoose = require('mongoose');
+
+const Load = require('./models/Load');
+const User = require('./models/User');
+
+let dbConnected = false;
+// Database Connection
+mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/loadbhai').then(() => {
+  console.log('MongoDB Connected to LoadBhai DB');
+  dbConnected = true;
+}).catch(err => console.log('MongoDB Connection Error (Falling back to Local Storage): ', err.message));
 
 // Twilio Parameters
 const accountSid = 'ACfb86c5620855a632aabe4850f1af12b7';
@@ -14,15 +25,14 @@ try {
 }
 
 const app = express();
-// Render environment port set karta hai, nahi toh 5000
 const PORT = process.env.PORT || 5000; 
 
-// 🔥 CORS UPDATED FOR SURGE LIVE DEPLOYMENT
 app.use(cors({
   origin: [
-    'http://localhost:5173', // Laptop test ke liye
+    'http://localhost:5173', 
+    'http://localhost:5174',
     'http://localhost:3000',
-    'https://loadbhai-logistics.surge.sh', // Tumhara Naya Live link
+    'https://loadbhai-logistics.surge.sh',
     'http://loadbhai-logistics.surge.sh'
   ],
   methods: ["GET", "POST", "OPTIONS"],
@@ -32,55 +42,42 @@ app.use(cors({
 app.use(express.json());
 
 const otpStorage = {};
-let loadsList = [];
+const memoryLoads = [
+  { id: 'LOD-9921', origin: 'Patna, BR', dest: 'Mumbai, MH', material: 'Agricultural Goods', weight: '12 Tons', price: '₹45,000', status: 'active', postedAt: '2 hours ago' },
+  { id: 'LOD-8834', origin: 'Delhi, DL', dest: 'Bangalore, KA', material: 'Electronics', weight: '8 Tons', price: '₹62,000', status: 'active', postedAt: '5 hours ago' }
+];
 
-// ======================================================
-// 🚀 SMART PRODUCTION ROUTE: REAL DISPATCH + INSTANT BYPASS
-// ======================================================
 app.post('/api/auth/send-otp', async (req, res) => {
   const { mobileNum } = req.body;
   if (!mobileNum || mobileNum.length !== 10) {
     return res.status(400).json({ error: 'Valid 10-digit Indian Mobile Number required' });
   }
 
-  // 4-digit random code generation
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   otpStorage[mobileNum] = otp;
-
-  console.log(`\n======================================================`);
   console.log(`[LoadBhai Core] Generated Security Token: ${otp} for phone matrix: ${mobileNum}`);
-  console.log(`======================================================\n`);
 
   try {
-    // Attempt sending real SMS via Twilio pipeline
-    await twilioClient.messages.create({
-      body: `\n[LoadBhai Logistics]\nRam Ram Bhai!\n\nSecurity Gatekeeper Token: ${otp}\nValid for 10 minutes only. Please do not share this token.`,
-      from: twilioNumber,
-      to: `+91${mobileNum}`
-    });
-
-    console.log(`[LoadBhai Gateway] Real SMS routed successfully via Twilio grid.`);
-    // Response for verified numbers
-    return res.status(200).json({ success: true, message: `OTP sent successfully to real device!` });
-
+    if (twilioClient) {
+      await twilioClient.messages.create({
+        body: `\n[LoadBhai Logistics]\nRam Ram Bhai!\n\nSecurity Gatekeeper Token: ${otp}\nValid for 10 minutes only. Please do not share this token.`,
+        from: twilioNumber,
+        to: `+91${mobileNum}`
+      });
+      return res.status(200).json({ success: true, message: `OTP sent successfully to real device!` });
+    } else {
+      throw new Error("No Twilio Client");
+    }
   } catch (error) {
-    console.log(`\n⚠️ [Twilio Restriction Bypass] Number unverified on console. Triggering Smart Local Fallback Mode...`);
-    
-    // 🔥 THE ULTIMATE HACK: Send back the OTP in response message so frontend can show it in alert!
     return res.status(200).json({ 
       success: true, 
-      message: `[SANDBOX INTERCEPT] Bhai, Twilio trial account restriction bypass active! Aapka Code hai: ${otp}` 
+      message: `[SANDBOX INTERCEPT] Aapka Code hai: ${otp}` 
     });
   }
 });
 
-// ======================================================
-// 🔑 VERIFICATION ROUTE
-// ======================================================
 app.post('/api/auth/verify-otp', (req, res) => {
   const { mobileNum, otpVal } = req.body;
-  console.log(`[LoadBhai Verification Trigger]: Validating code ${otpVal}`);
-  
   if (otpStorage[mobileNum] && otpStorage[mobileNum] === otpVal) {
     delete otpStorage[mobileNum];
     return res.status(200).json({ verified: true });
@@ -89,19 +86,39 @@ app.post('/api/auth/verify-otp', (req, res) => {
   }
 });
 
-// ======================================================
-// 🚛 LOADS ROUTE
-// ======================================================
-app.get('/api/loads', (req, res) => { return res.status(200).json(loadsList); });
-app.post('/api/loads', (req, res) => {
-  const newLoad = { id: `LOD-${Date.now()}`, ...req.body };
-  loadsList.unshift(newLoad);
-  return res.status(201).json(newLoad);
+app.get('/api/loads', async (req, res) => {
+  try {
+    if (dbConnected) {
+      const loads = await Load.find().sort({ createdAt: -1 });
+      return res.status(200).json(loads.length > 0 ? loads : memoryLoads);
+    }
+    return res.status(200).json(memoryLoads);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch loads' });
+  }
 });
 
-// ======================================================
-// 🤖 AI CHATBOT ROUTE (Frontend me error na aaye)
-// ======================================================
+app.post('/api/loads', async (req, res) => {
+  try {
+    const { origin, dest, material, weight, price } = req.body;
+    const newLoadData = {
+      id: `LOD-${Math.floor(Math.random() * 90000) + 10000}`,
+      origin, dest, material, weight, price, postedAt: 'Just now'
+    };
+    
+    if (dbConnected) {
+      const newLoad = new Load(newLoadData);
+      await newLoad.save();
+      return res.status(201).json(newLoad);
+    } else {
+      memoryLoads.unshift(newLoadData);
+      return res.status(201).json(newLoadData);
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create load', details: err.message });
+  }
+});
+
 app.post('/api/ai/chat', (req, res) => {
   const { userMessage } = req.body;
   return res.status(200).json({ reply: `Bhai, AI server abhi load le raha hai. Tumne poocha: "${userMessage}"` });
