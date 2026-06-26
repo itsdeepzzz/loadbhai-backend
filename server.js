@@ -27,6 +27,7 @@ app.use('/api/loads',     require('./routes/loads'));
 app.use('/api/trucks',    require('./routes/trucks'));
 app.use('/api/bus',       require('./routes/bus'));
 app.use('/api/corporate', require('./routes/corporate'));
+app.use('/api/maps',      require('./routes/maps'));
 
 // ── HEALTH CHECK ──────────────────────────────────────────
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
