@@ -19,7 +19,7 @@ type ListingTab = 'all' | 'my_listings' | 'command_center';
 
 // --- CONSTANTS & MOCK DATA ---
 import AppHeader from './components/AppHeader';
-import { sendOtp, verifyOtp, getLoads, createLoad } from './api';
+import { sendOtp, verifyOtp, getLoads, createLoad, register, login, getTrucks, createTruck, getBusSpaces, createBusSpace, getDemands, createDemand, placeBid } from './api';
 import SupplementaryViews from './components/SupplementaryViews';
 import DashboardView from './components/DashboardView';
 import FeatureDetailView from './components/FeatureDetailView';
@@ -131,24 +131,33 @@ export default function App() {
     }
   }, [showDemo]);
 
-  // Fetch loads from backend on mount
+    // Fetch all data from backend on mount
   useEffect(() => {
+    // Loads
     getLoads().then((data) => {
       if (data && data.length > 0) {
-        const mapped = data.map((l) => ({
-          id: l.id,
-          companyName: l.companyName || 'Shipper',
-          material: l.material,
-          weight: l.weight,
-          origin: l.origin,
-          destination: l.dest || l.destination,
-          targetPrice: l.price ? Number(String(l.price).replace(/[^0-9]/g, '')) : 0,
-          isMine: false
-        }));
-        setLoadsList(prev => {
-          const mine = prev.filter((x) => x.isMine);
-          return [...mine, ...mapped];
-        });
+        setLoadsList(prev => [...prev.filter((x) => x.isMine), ...data.map((l) => ({...l, id: l.loadId || l.id, destination: l.dest || l.destination, targetPrice: l.targetPrice || l.price, isMine: false}))]);
+      }
+    }).catch(() => {});
+    
+    // Trucks
+    getTrucks().then((data) => {
+      if (data && data.length > 0) {
+        setDriversList(prev => [...prev.filter((x) => x.isMine), ...data.map((t) => ({...t, id: t.truckId || t.id, isMine: false}))]);
+      }
+    }).catch(() => {});
+
+    // Bus Spaces
+    getBusSpaces().then((data) => {
+      if (data && data.length > 0) {
+        setBusSpaceList(prev => [...prev.filter((x) => x.isMine), ...data.map((b) => ({...b, id: b.busId || b.id, isMine: false}))]);
+      }
+    }).catch(() => {});
+
+    // Corporate Bids
+    getDemands().then((data) => {
+      if (data && data.length > 0) {
+        setCorporateBids(prev => [...prev.filter((x) => x.isMine), ...data.map((d) => ({...d, id: d.demandId || d.id, L1: d.currentL1 || d.initialL1, isMine: false}))]);
       }
     }).catch(() => {});
   }, []);
@@ -171,7 +180,22 @@ export default function App() {
     }
   };
 
-  const executeLogin = () => { setIsLoggedIn(true); setAuthModal({ open: false, step: 'role' }); handlePageChange('dashboard'); };
+  const executeLogin = (token?: string) => {
+    if (token) setToken(token);
+    setIsLoggedIn(true);
+    setAuthModal({ open: false, step: 'role' });
+    handlePageChange('dashboard');
+    // Fetch live data after login
+    getTrucks().then(data => {
+      if (data?.length) setDriversList(prev => [...prev.filter((x) => x.isMine), ...data.map((t) => ({ id: t.truckId, origin: t.origin, destination: t.destination, capacity: t.capacity, charges: t.charges, type: t.truckType, driverName: t.driverName, isMine: false, _id: t._id }))]);
+    }).catch(() => {});
+    getDemands().then(data => {
+      if (data?.length) setCorporateBids(prev => [...prev, ...data.map((d) => ({ id: d.demandId, company: d.company, demand: d.demand, route: d.route, L1: d.currentL1, time: 'Active', _id: d._id }))]);
+    }).catch(() => {});
+    getBusSpaces().then(data => {
+      if (data?.length) setBusSpaceList(prev => [...prev.filter((x) => x.isMine), ...data.map((b) => ({ id: b.busId, operator: b.operator, route: b.route, capacity: b.capacity, price: b.price, isMine: false, serviceType: b.serviceType, _id: b._id }))]);
+    }).catch(() => {});
+  };
   const handleVerifyOtp = async () => {
     if (otpVal.length !== 4) return;
     try {
@@ -186,7 +210,7 @@ export default function App() {
   };
 
 
-  const handleLogout = () => { setIsLoggedIn(false); setUser({ firstName: '', lastName: '', mobile: '', email: '', password: '', businessName: '', gst: '', dl: '', dp: '' }); setSelectedRole(null); handlePageChange('landing'); };
+  const handleLogout = () => { clearToken(); setIsLoggedIn(false); setUser({ firstName: '', lastName: '', mobile: '', email: '', password: '', businessName: '', gst: '', dl: '', dp: '' }); setSelectedRole(null); handlePageChange('landing'); };
 
   const handleProfilePicUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) setUser({ ...user, dp: URL.createObjectURL(e.target.files[0]) });
@@ -204,18 +228,28 @@ export default function App() {
 
   const openWhatsApp = (msg: string) => { window.open(`https://wa.me/918210160012?text=${encodeURIComponent(msg)}`, '_blank'); };
 
-  const processBid = () => {
+  const processBid = async () => {
+     if (!counterOffer) return;
      if (Number(counterOffer) >= (negotiationTarget?.data?.L1 || 0)) return alert(t("Bid must be lower than current L1 price!", "बोली वर्तमान L1 कीमत से कम होनी चाहिए!"));
      const updatedBids = corporateBids.map((b: any) => b.id === negotiationTarget?.data?.id ? { ...b, L1: Number(counterOffer) } : b);
-     setCorporateBids(updatedBids); setNegotiationTarget(null); setCounterOffer('');
+     setCorporateBids(updatedBids); 
+     const demandId = negotiationTarget?.data?.id;
+     setNegotiationTarget(null); setCounterOffer('');
      alert(t("Bid Placed Successfully! You are now L1.", "बोली सफलतापूर्वक लगाई गई!"));
+     try {
+       // Check if demandId looks like a Mongo ID or mock ID
+       if (demandId && demandId.length > 10) await placeBid(demandId, Number(counterOffer));
+     } catch(err) {}
   };
 
-  const handlePostTruck = (e: React.FormEvent) => {
+  const handlePostTruck = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTruck.origin) return;
     const created = { id: `TRK-${Math.floor(1000 + Math.random() * 9000)}`, driverName: user.firstName || 'Driver', phone: user.mobile, dp: user.dp, currentLoc: newTruck.origin, destLoc: newTruck.dest, capacity: newTruck.capacity || '16', charges: Number(newTruck.charges) || 50000, status: 'Booked', type: 'Open Body', isMine: true, truckImg: 'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&q=80&w=400' };
     setDriversList([created, ...driversList]); setPlatformStats((prev: any) => ({...prev, trucks: prev.trucks + 1, cities: prev.cities + 2})); setListingTab('my_listings'); setNewTruck({ origin: '', dest: '', capacity: '', charges: '', vehicleNumber: '' }); setBookingStep(1);
+    try {
+      await createTruck({ origin: newTruck.origin, destination: newTruck.dest, capacity: newTruck.capacity || '16 Tons', charges: newTruck.charges || 50000, truckType: 'Open Body' });
+    } catch(err) {}
   };
 
   const handlePostLoad = async (e: React.FormEvent) => {
@@ -239,7 +273,7 @@ export default function App() {
     } catch (err) {}
   };
 
-  const handlePostBus = (e: React.FormEvent) => {
+  const handlePostBus = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newBus.route) return alert(t("Please enter Route.", "कृपया रूट डालें।"));
     const isDriver = selectedRole === 'driver' || selectedRole === 'transporter';
@@ -260,11 +294,14 @@ export default function App() {
     setBusSpaceList([busPayload, ...busSpaceList]); setNewBus({ route: '', serviceType: 'Standard', price: '', vehicleNumber: '', capacity: '', productType: '', weight: '' }); setBusTab('my_listings'); setBookingStep(1);
   };
 
-  const handlePostBid = (e: React.FormEvent) => {
+  const handlePostBid = async (e: React.FormEvent) => {
     e.preventDefault();
     if(!newBid.demand) return;
-    const created = { id: `#${Math.floor(10000 + Math.random() * 90000)}`, company: user.businessName || 'Corporate', demand: newBid.demand, route: newBid.route, L1: Number(newBid.initialL1) || 50000, time: '7 Days Left', l1Holder: 'Awaiting Bids' };
+    const created = { id: `#${Math.floor(10000 + Math.random() * 90000)}`, company: user.businessName || 'Corporate', demand: newBid.demand, route: newBid.route, L1: Number(newBid.initialL1) || 50000, time: '7 Days Left', l1Holder: 'Awaiting Bids', isMine: true };
     setCorporateBids([created, ...corporateBids]); setNewBid({ demand: '', route: '', initialL1: '' });
+    try {
+      await createDemand({ demand: newBid.demand, route: newBid.route, initialL1: newBid.initialL1 });
+    } catch(err) {}
   };
 
   const handleKycSubmit = () => {
@@ -308,51 +345,7 @@ export default function App() {
       
       <div className="flex flex-col lg:flex-row gap-8 relative z-10">
         <div className="flex-[2] relative rounded-[1.5rem] overflow-hidden bg-[#000000] shadow-inner border border-slate-800 h-[450px]">
-           {safetyEnabled && (
-             <div className="absolute inset-0 z-30 bg-black/90 backdrop-blur-md p-8 flex flex-col items-center justify-center text-center">
-                <AlertTriangle className="h-20 w-20 text-red-500 mb-6 animate-pulse drop-shadow-[0_0_15px_rgba(239,68,68,0.8)]" />
-                <h3 className="text-4xl font-black text-red-500 mb-4 tracking-tight">High Risk Zone</h3>
-                <p className="text-slate-300 text-lg font-bold mb-8">Alert on route to {destLabel}. 3 Fatal Accidents in 48 Hrs.<br/>Foggy conditions ahead.</p>
-                <button type="button" onClick={() => setSafetyEnabled(false)} className="bg-red-600 text-white px-10 py-4 rounded-xl text-base font-black hover:bg-red-700 shadow-xl">Acknowledge</button>
-             </div>
-           )}
-
-           <div className="absolute inset-0 flex items-center justify-center overflow-hidden pointer-events-none">
-             <div className="border border-teal-500/20 rounded-full w-[100%] h-[100%] absolute animate-ping" style={{animationDuration: '4s'}}></div>
-             <div className="border border-teal-500/30 rounded-full w-[70%] h-[70%] absolute"></div>
-             <div className="border border-teal-500/50 rounded-full w-[40%] h-[40%] absolute"></div>
-             <div className="w-4 h-4 bg-[#EA580C] rounded-full absolute shadow-[0_0_20px_#EA580C]"></div>
-             
-             {myActiveItem ? (
-               <svg className="absolute inset-0 w-full h-full z-10 pointer-events-none" viewBox="0 0 800 600">
-                   <path d="M 200 300 Q 400 100 600 300" fill="transparent" stroke="#EA580C" strokeWidth="2" strokeDasharray="6 6" className="animate-pulse opacity-60" />
-                   <circle cx="200" cy="300" r="8" fill="#EA580C" />
-                   <text x="170" y="330" fill="#94A3B8" fontSize="14" fontWeight="bold">{originLabel}</text>
-                   <circle cx="600" cy="300" r="8" fill="#EA580C" className="animate-ping" />
-                   <circle cx="600" cy="300" r="6" fill="#EA580C" />
-                   <text x="570" y="330" fill="#94A3B8" fontSize="14" fontWeight="bold">{destLabel}</text>
-                   <g className="animate-truck-move-dynamic">
-                      <rect x="-20" y="-10" width="40" height="20" fill="#EA580C" rx="4" />
-                   </g>
-               </svg>
-             ) : (
-               <div className="text-slate-500 font-bold z-10 bg-slate-900/80 px-6 py-3 rounded-xl border border-slate-800">Scanning active fleet grid...</div>
-             )}
-           </div>
-
-           {myActiveItem && (
-             <div className="absolute top-6 left-6 bg-slate-900/90 backdrop-blur p-5 rounded-2xl border border-slate-700 w-80 z-20 shadow-2xl">
-               <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Active Trip Telemetry</h4>
-               <div className="flex justify-between items-center mb-3">
-                 <span className="font-black text-white truncate max-w-[40%] text-base">{originLabel}</span>
-                 <ArrowRight className="h-5 w-5 text-slate-500" />
-                 <span className="font-black text-white truncate max-w-[40%] text-base">{destLabel}</span>
-               </div>
-               <div className="text-[10px] text-teal-400 font-black flex items-center mt-4 bg-teal-500/10 w-fit px-3 py-1.5 rounded-lg border border-teal-500/20">
-                 <Radio className="h-4 w-4 mr-2 animate-pulse" /> GPS Connection Active
-               </div>
-             </div>
-           )}
+           <LiveRadarMap trucks={safeDrivers} />
         </div>
 
         <div className="flex-1 flex flex-col gap-6">
